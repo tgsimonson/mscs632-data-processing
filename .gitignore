@@ -1,0 +1,11 @@
+# build output
+java/out/
+java/out-test/
+# run output, recreated on every run
+java/results/
+java/logs/
+go/results/
+go/logs/
+# personal notes, not part of the submission
+notes/
+.DS_Store

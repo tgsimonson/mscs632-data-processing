@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# builds the java version when a source file is newer than the last build,
+# then runs it: ./dataproc (window) or ./dataproc run [options]
+set -e
+cd "$(dirname "$0")"
+if [ ! -f out/.stamp ] || [ -n "$(find src -name '*.java' -newer out/.stamp -print -quit)" ]; then
+  rm -rf out
+  javac -d out $(find src -name '*.java')
+  touch out/.stamp
+fi
+exec java -Dapple.awt.application.name="Data Processing System" -cp out dataproc.Main "$@"

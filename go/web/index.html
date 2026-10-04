@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data Processing System (Go)</title>
+<style>
+  :root {
+    --bg: #111418; --panel: #1a1f26; --line: #2a313b; --text: #e6eaf0; --muted: #8a94a3;
+    --ok: #9be15d; --busy: #6cb6ff; --error: #ff7a7a;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 14px; color: var(--text);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); padding: 16px 18px 12px; min-height: 100vh; display: flex; flex-direction: column; gap: 12px; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; }
+  h1 { margin: 0; font-size: 22px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  input { width: 70px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 5px 6px; font: inherit; }
+  input.wide { width: 260px; }
+  button { border: 0; border-radius: 4px; padding: 7px 16px; font: inherit; font-weight: 700; cursor: pointer; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  #start { background: var(--ok); color: var(--bg); }
+  #stop { background: var(--error); color: var(--bg); }
+  main { flex: 1; display: grid; grid-template-columns: 1fr 1.1fr; gap: 12px; min-height: 0; }
+  .col { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  .card h2 { margin: 0; font-size: 13px; }
+  .lane { display: flex; gap: 12px; align-items: center; border-left: 3px solid var(--muted); background: var(--bg); padding: 6px 10px; }
+  .lane b { width: 80px; }
+  .lane .state { flex: 1; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: var(--muted); }
+  .lane.busy { border-color: var(--busy); } .lane.busy .state { color: var(--busy); }
+  .lane.ok { border-color: var(--ok); } .lane.err { border-color: var(--error); }
+  #lanes { display: flex; flex-direction: column; gap: 4px; overflow: auto; flex: 1; }
+  .bar { height: 18px; background: var(--bg); position: relative; }
+  .bar > div { height: 100%; width: 0; transition: width 0.15s; }
+  .bar span { position: absolute; inset: 0; text-align: center; font-size: 12px; line-height: 18px; }
+  #queuefill { background: var(--busy); } #donefill { background: var(--ok); }
+  pre { margin: 0; background: var(--bg); border: 1px solid var(--line); padding: 6px 8px; font-size: 12px; height: 220px; overflow: auto; white-space: pre-wrap; }
+  .tablewrap { flex: 1; overflow: auto; border: 1px solid var(--line); background: var(--bg); min-height: 300px; }
+  table { width: 100%; border-collapse: collapse; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  th { position: sticky; top: 0; background: var(--panel); color: var(--muted); text-align: left; padding: 5px 8px; font-family: inherit; }
+  td { padding: 4px 8px; border-top: 1px solid var(--line); }
+  td.OK { color: var(--ok); } td.ERROR, td.msg { color: var(--error); }
+  #summary { font-weight: 700; color: var(--muted); }
+  #summary.good { color: var(--ok); } #summary.bad { color: var(--error); }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Data Processing System</h1>
+    <div class="muted">Go · goroutine worker pool · channel queue · collector goroutine owns the results</div>
+    <div class="controls" style="margin-top:6px"><span class="muted">Task file</span><input id="tasks" class="wide" value="../data/tasks.txt"></div>
+  </div>
+  <div class="controls">
+    <span class="muted">Workers</span><input id="workers" type="number" min="1" max="16" value="4">
+    <span class="muted">Queue capacity</span><input id="capacity" type="number" min="1" max="32" value="6">
+    <span class="muted">Delay scale</span><input id="scale" type="number" min="0" max="20" step="1" value="6">
+    <button id="start">Start</button><button id="stop" disabled>Stop</button>
+  </div>
+</header>
+<main>
+  <div class="col">
+    <section class="card" style="flex:1">
+      <h2>Worker goroutines</h2>
+      <div id="lanes"></div>
+      <div class="muted">Shared queue depth</div>
+      <div class="bar"><div id="queuefill"></div><span id="queuetext">0 / 0</span></div>
+      <div class="muted">Tasks finished</div>
+      <div class="bar"><div id="donefill"></div><span id="donetext">0 / 0</span></div>
+    </section>
+    <section class="card"><h2>Log</h2><pre id="log"></pre></section>
+  </div>
+  <section class="card">
+    <h2>Results</h2>
+    <div class="tablewrap">
+      <table><thead><tr><th>ID</th><th>Value</th><th>Status</th><th>Factors or error</th><th>Worker</th><th>ms</th></tr></thead>
+      <tbody id="rows"></tbody></table>
+    </div>
+  </section>
+</main>
+<div id="summary">Press Start to process the task file.</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let total = 0, done = 0;
+  const lanes = new Map();
+
+  function lane(name) {
+    if (!lanes.has(name)) {
+      const el = document.createElement('div');
+      el.className = 'lane';
+      el.innerHTML = '<b></b><span class="state">waiting for a task</span><span class="muted count">0 tasks</span>';
+      el.querySelector('b').textContent = name;
+      el.dataset.count = 0;
+      $('lanes').append(el);
+      lanes.set(name, el);
+    }
+    return lanes.get(name);
+  }
+  function setBar(fill, text, value, max) {
+    $(fill).style.width = (max ? 100 * value / max : 0) + '%';
+    $(text).textContent = value + ' / ' + max;
+  }
+  function cell(row, text, cls) {
+    const td = row.insertCell();
+    td.textContent = text;
+    if (cls) td.className = cls;
+  }
+
+  // idle lanes for the workers the next run will start
+  function idleLanes() {
+    if ($('start').disabled) return;
+    lanes.clear(); $('lanes').innerHTML = '';
+    for (let i = 1; i <= +$('workers').value; i++) lane('worker-' + i);
+    setBar('queuefill', 'queuetext', 0, +$('capacity').value);
+  }
+  $('workers').oninput = idleLanes;
+  $('capacity').oninput = idleLanes;
+  idleLanes();
+
+  const events = new EventSource('/api/events');
+  events.onmessage = (e) => {
+    const { type, data } = JSON.parse(e.data);
+    if (type === 'log') {
+      const log = $('log');
+      log.textContent += data;
+      log.scrollTop = log.scrollHeight;
+    } else if (type === 'start') {
+      total = data.total; done = 0;
+      lanes.clear(); $('lanes').innerHTML = ''; $('rows').innerHTML = ''; $('log').textContent = '';
+      for (let i = 1; i <= data.workers; i++) lane('worker-' + i);
+      setBar('queuefill', 'queuetext', 0, data.capacity);
+      setBar('donefill', 'donetext', 0, total);
+      $('summary').className = ''; $('summary').textContent = 'Running ' + data.workers + ' workers...';
+      $('start').disabled = true; $('stop').disabled = false;
+    } else if (type === 'worker') {
+      const el = lane(data.worker);
+      el.className = 'lane';
+      el.querySelector('.state').textContent = data.state === 'finished' ? 'finished' : 'waiting for a task';
+    } else if (type === 'task') {
+      const el = lane(data.worker);
+      el.className = 'lane busy';
+      el.querySelector('.state').textContent = 'processing task ' + data.id + ' (' + data.value + ')';
+    } else if (type === 'result') {
+      const el = lane(data.worker);
+      el.className = 'lane ' + (data.ok ? 'ok' : 'err');
+      el.querySelector('.state').textContent = 'waiting for a task';
+      const n = ++el.dataset.count;
+      el.querySelector('.count').textContent = n + (n === 1 ? ' task' : ' tasks');
+      const row = $('rows').insertRow();
+      cell(row, data.id); cell(row, data.value);
+      cell(row, data.ok ? 'OK' : 'ERROR', data.ok ? 'OK' : 'ERROR');
+      cell(row, data.ok ? data.factors : data.message, data.ok ? '' : 'msg');
+      cell(row, data.worker); cell(row, data.ms);
+      setBar('donefill', 'donetext', ++done, total);
+    } else if (type === 'queue') {
+      setBar('queuefill', 'queuetext', data.depth, data.capacity);
+    } else if (type === 'done' || type === 'error') {
+      $('start').disabled = false; $('stop').disabled = true;
+      const s = $('summary');
+      if (type === 'error') {
+        s.className = 'bad'; s.textContent = 'Error: ' + data;
+      } else {
+        s.className = data.complete ? 'good' : 'bad';
+        s.textContent = (data.cancelled ? 'Cancelled' : data.complete ? 'Complete' : 'Incomplete') +
+          '  ·  ' + data.processed + ' processed (' + data.ok + ' ok, ' + data.failed + ' failed)' +
+          '  ·  missed: ' + (data.missing || 'none') + '  ·  repeated: ' + (data.duplicates || 'none') +
+          '  ·  ' + data.ms + ' ms';
+      }
+    }
+  };
+
+  $('start').onclick = async () => {
+    const body = {
+      workers: +$('workers').value, capacity: +$('capacity').value,
+      scale: +$('scale').value, tasks: $('tasks').value,
+    };
+    const res = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res.ok) {
+      $('summary').className = 'bad';
+      $('summary').textContent = 'Error: ' + (await res.text()).trim();
+    }
+  };
+  $('stop').onclick = () => fetch('/api/stop', { method: 'POST' });
+</script>
+</body>
+</html>
